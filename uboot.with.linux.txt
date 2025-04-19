@@ -1,0 +1,73 @@
+ONIE linux kernel:
+        folder: ~/git/onie/build/qemu_armv7a-r0/kernel/linux  # from "https://github.com/opencomputeproject/onie.git"
+        build for qmue's "virt" machine kernel image:
+                make ARCH=arm CROSS_COMPILE=armv7a- menuconfig
+                # enable CONFIG_ARCH_VIRT, CONFIG_ARM_PSCI, CONFIG_GPIOLIB_IRQCHIP, CONFIG_GPIO_PL061
+                make -j20  ARCH=arm CROSS_COMPILE=armv7a- uImage LOADADDR=0x40008000    # this load address is for "virt" machine
+                # copy uImage to uImage.virt
+                xz -d -c qemu_armv7a-r0.initrd | gzip -c > initrd.cpio.gz; mkimage -A arm -O linux -T ramdisk -C gzip -d initrd.cpio.gz uInitrd
+                qemu-system-arm -M virt,dumpdtb=virt.dtb        # get "virt" machine's dtb file
+
+Debug via GDB:
+        from gdb:
+                gdb debug it in QEMU environment: gdb-multiarch ./vmlinux -ex "target remote :1234" -ex "hb start_kernel" -ex "c"
+        from gdbserver:
+                # u-boot.bin is built from "https://github.com/ARM-software/u-boot.git"
+                qemu-system-arm -bios u-boot.bin -serial mon:stdio -machine virt -cpu cortex-a15  -m 1024M -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0 -drive id=hd0,if=none,format=raw,file=/media/nvme0n1p3/home/yan92617/test/mnt/mntdev -s -S
+
+uboot command line:
+        ext2load scsi 0 0x60200000 uImage.virt
+        ext2load scsi 0 0x70000000 uInitrd
+        ext2load scsi 0 0x60000000 virt.dtb
+        setenv bootargs console=ttyAMA0,115200 earlyprintk printk
+        bootm 0x60200000 0x70000000 0x60000000
+
+lessons:
+        originally I load DTB onto 0x78000000, and it will always CRASH during kernel startup! Following some kernel startup code, I found the possible
+root cause: the kernel will ignore all physical memory space after the kernel/initramfs, only use memory before them!
+        You can see log "Truncating RAM at 0x40000000-0x80000000 to -0x6f800000"
+        So this DTB PHY address converted to virtual address "0xF8000000" which doesn't exist in the virtual address space because the kernel don't use
+it anymore!!
+
+
+console outputs:
+
+=> ext2load scsi 0 0x60200000 uImage.virt
+4474496 bytes read in 77 ms (55.4 MiB/s)
+=> ext2load scsi 0 0x70000000 uInitrd
+4866548 bytes read in 81 ms (57.3 MiB/s)
+=> ext2load scsi 0 0x60000000 virt.dtb
+1048576 bytes read in 17 ms (58.8 MiB/s)
+=> setenv bootargs console=ttyAMA0,115200 earlyprintk printk
+=> bootm 0x60200000 0x70000000 0x60000000
+## Booting kernel from Legacy Image at 60200000 ...
+   Image Name:   Linux-4.1.38-onie+
+   Created:      2025-04-19  10:52:02 UTC
+   Image Type:   ARM Linux Kernel Image (uncompressed)
+   Data Size:    4474432 Bytes = 4.3 MiB
+   Load Address: 40008000
+   Entry Point:  40008000
+   Verifying Checksum ... OK
+## Loading init Ramdisk from Legacy Image at 70000000 ...
+   Image Name:
+   Created:      2025-04-19   6:18:01 UTC
+   Image Type:   ARM Linux RAMDisk Image (gzip compressed)
+   Data Size:    4866484 Bytes = 4.6 MiB
+   Load Address: 00000000
+   Entry Point:  00000000
+   Verifying Checksum ... OK
+## Flattened Device Tree blob at 60000000
+   Booting using the fdt blob at 0x60000000
+   Loading Kernel Image ... OK
+   Using Device Tree in place at 60000000, end 60102fff
+
+Starting kernel ...
+
+Booting Linux on physical CPU 0x0
+Linux version 4.1.38-onie+ (yan92617@szloadbuild) (gcc version 8.3.0 (crosstool-NG 1.24.0 - ONIE-master-04031007-dirty) ) #4 SMP Sat Apr 19 18:51:55 CST 2025
+CPU: ARMv7 Processor [412fc0f1] revision 1 (ARMv7), cr=10c5387d
+CPU: PIPT / VIPT nonaliasing data cache, PIPT instruction cache
+Machine model: linux,dummy-virt
+Truncating RAM at 0x40000000-0x80000000 to -0x6f800000
+INITRD: 0x70000040+0x004a41b4 is not a memory region - disabling initrd
+......
